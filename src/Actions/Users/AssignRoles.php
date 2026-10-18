@@ -11,6 +11,7 @@ use InvalidArgumentException;
 use Ladcms\Core\Models\Role;
 use Ladcms\Core\Models\User;
 use Ladcms\Core\Support\Audit;
+use Ladcms\Core\Support\UserModel;
 
 class AssignRoles
 {
@@ -28,12 +29,12 @@ class AssignRoles
         $roleNames = array_values(array_unique($roleNames));
 
         // Инвариант проверяется до авторизации: последний создатель не может потерять роль creator.
-        if (! in_array('creator', $roleNames, true) && $target->hasRole('creator') && User::role('creator')->count() <= 1) {
+        if (! in_array('creator', $roleNames, true) && $target->hasRole('creator') && UserModel::query()->role('creator')->count() <= 1) {
             throw new InvalidArgumentException('The last creator cannot lose the creator role.');
         }
 
         Gate::forUser($actor)->authorize('assignRoles', $target);
-        $roles = Role::query()->where('guard_name', 'web')->whereIn('name', $roleNames)->get();
+        $roles = Role::query()->with('permissions')->where('guard_name', 'web')->whereIn('name', $roleNames)->get();
 
         $missing = array_diff($roleNames, $roles->pluck('name')->all());
         if ($missing !== []) {
@@ -46,6 +47,14 @@ class AssignRoles
 
             if ($tooHigh->isNotEmpty()) {
                 throw new AuthorizationException('You cannot assign roles at or above your own level.');
+            }
+
+            // Роль не должна давать прав, которых нет у самого актора (иначе — эскалация через роль без уровня/ниже уровня).
+            $actorPermissions = $actor->getAllPermissions()->pluck('name')->all();
+            $escalating = $roles->filter(fn (Role $role): bool => array_diff($role->permissions->pluck('name')->all(), $actorPermissions) !== []);
+
+            if ($escalating->isNotEmpty()) {
+                throw new AuthorizationException('You cannot assign roles with permissions you do not have.');
             }
         }
 

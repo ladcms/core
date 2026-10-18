@@ -18,6 +18,7 @@ use Ladcms\Core\Enums\Sex;
 use Ladcms\Core\Settings\RegistrationSettings;
 use Ladcms\Core\Support\LoginRules;
 use Ladcms\Core\Support\RoleLevel;
+use Ladcms\Core\Support\UserModel;
 use Spatie\Permission\Traits\HasRoles;
 
 /**
@@ -51,9 +52,12 @@ class User extends Authenticatable
     use Notifiable;
     use SoftDeletes;
 
+    /** Guard для spatie/permission: явно, чтобы не зависеть от того, какой класс указан в `auth.providers`. */
+    protected string $guard_name = 'web';
+
     protected $fillable = [
         'login', 'name', 'email', 'password', 'avatar_path', 'sex', 'birth_date', 'about', 'signature',
-        'language', 'timezone', 'registered_ip', 'is_suspicious', 'suspicious_note',
+        'language', 'timezone',
         'show_email', 'show_birthday', 'messages_from',
     ];
 
@@ -82,6 +86,21 @@ class User extends Authenticatable
         'show_birthday' => true,
         'messages_from' => 'all',
     ];
+
+    /**
+     * Единый морф-тип для core User и наследника приложения: `model_has_roles`, `notifications`,
+     * `activity_log` хранят `user`, а morphMap (CoreServiceProvider) резолвит его в модель приложения.
+     */
+    public function getMorphClass(): string
+    {
+        return UserModel::MORPH_ALIAS;
+    }
+
+    /** Внешний ключ `user_id` и для наследников (иначе Eloquent вывел бы его из имени класса наследника). */
+    public function getForeignKey(): string
+    {
+        return 'user_id';
+    }
 
     protected static function newFactory(): UserFactory
     {
@@ -137,9 +156,13 @@ class User extends Authenticatable
         return self::avatarDirectory($userId).'/'.$size.'.jpg';
     }
 
+    /**
+     * Максимальный уровень ролей. Считается по загруженной связи `roles` (один запрос на экземпляр):
+     * spatie сбрасывает связь при assignRole/removeRole/syncRoles, refresh() перезагружает её.
+     */
     public function level(): int
     {
-        return (int) ($this->roles()->max('level') ?? 0);
+        return (int) ($this->roles->max('level') ?? 0);
     }
 
     public function outranks(User $other): bool
@@ -188,10 +211,12 @@ class User extends Authenticatable
     /** Может ли писать: нет активного бана любого типа и истёк read-only период после регистрации. */
     public function canWrite(): bool
     {
-        if ($this->isBanned()) {
-            return false;
-        }
+        return ! $this->isBanned() && $this->readonlyPeriodPassed();
+    }
 
+    /** Истёк ли read-only период после регистрации (`registration.readonly_hours`). */
+    public function readonlyPeriodPassed(): bool
+    {
         $hours = app(RegistrationSettings::class)->readonly_hours;
 
         return $hours === 0 || $this->created_at === null || $this->created_at->copy()->addHours($hours)->isPast();

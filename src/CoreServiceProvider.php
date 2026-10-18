@@ -7,6 +7,7 @@ namespace Ladcms\Core;
 use Illuminate\Auth\Events\Registered;
 use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Contracts\Http\Kernel as HttpKernelContract;
+use Illuminate\Database\Eloquent\Relations\Relation;
 use Illuminate\Foundation\Http\Kernel as HttpKernel;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Gate;
@@ -30,10 +31,12 @@ use Ladcms\Core\Module\ModuleRegistry;
 use Ladcms\Core\Module\ModuleServiceProvider;
 use Ladcms\Core\Policies\RolePolicy;
 use Ladcms\Core\Policies\UserPolicy;
+use Ladcms\Core\Services\LocaleManager;
 use Ladcms\Core\Settings\AppearanceSettings;
 use Ladcms\Core\Settings\GeneralSettings;
 use Ladcms\Core\Settings\ModerationSettings;
 use Ladcms\Core\Settings\RegistrationSettings;
+use Ladcms\Core\Support\UserModel;
 use Spatie\LaravelPackageTools\Package;
 use Spatie\Permission\Middleware\PermissionMiddleware;
 use Spatie\Permission\Middleware\RoleMiddleware;
@@ -123,7 +126,7 @@ class CoreServiceProvider extends ModuleServiceProvider implements HasPermission
         }
 
         Inertia::share('locale', fn (): string => app()->getLocale());
-        Inertia::share('locales', fn (): mixed => config('core.locales'));
+        Inertia::share('locales', fn (): array => $this->app->make(LocaleManager::class)->available());
 
         // Ежедневная чистка: неподтверждённые аккаунты и старые записи журнала активности.
         $this->callAfterResolving(Schedule::class, function (Schedule $schedule): void {
@@ -142,6 +145,10 @@ class CoreServiceProvider extends ModuleServiceProvider implements HasPermission
         // поэтому App\Models\User extends core User отдельной регистрации не требует.
         Gate::policy(User::class, UserPolicy::class);
         Gate::policy(Role::class, RolePolicy::class);
+
+        // Морф-алиас пользователя (см. User::getMorphClass): роли, уведомления и журнал хранят `user`,
+        // а при чтении morphTo получает модель приложения из `auth.providers.users.model`.
+        Relation::morphMap([UserModel::MORPH_ALIAS => UserModel::class()]);
 
         // Страницы модулей: Inertia-компонент `module::Path` → <modulePath>/resources/js/pages/Path.tsx.
         $this->app->extend('inertia.view-finder', fn ($finder, $app) => new ModulePageFinder(
