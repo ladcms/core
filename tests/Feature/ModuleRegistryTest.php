@@ -46,7 +46,7 @@ it('wraps admin routes with the admin prefix and middleware', function () {
     $route = collect(Route::getRoutes())->first(fn ($r) => $r->uri() === 'admin/dummy');
 
     expect($route)->not->toBeNull()
-        ->and($route->gatherMiddleware())->toContain('web', 'auth', 'admin');
+        ->and($route->gatherMiddleware())->toContain('web', 'auth', 'admin', 'ladcms.password-confirm');
 });
 
 it('does not boot a module whose core version is incompatible', function () {
@@ -106,4 +106,35 @@ it('collects modules implementing an interface', function () {
 
     expect($registry->implementing(HasPermissions::class)->keys()->all())
         ->toBe(['core', 'dummy']);
+});
+
+it('treats a disabled module like a failed one and fails its dependents', function () {
+    $this->app->register(FriendServiceProvider::class);
+    $registry = app(ModuleRegistry::class);
+    expect($registry->has('friend'))->toBeTrue();
+
+    $registry->markDisabled('friend');
+
+    expect($registry->has('friend'))->toBeFalse()
+        ->and($registry->failures()['friend']->reason)->toBe('disabled by administrator');
+});
+
+it('recomputes a disabled module from scratch and never disables core', function () {
+    $registry = app(ModuleRegistry::class);
+
+    $registry->markDisabled('dummy', 'custom reason');
+    $registry->markDisabled('core');
+
+    expect($registry->has('dummy'))->toBeFalse()
+        ->and($registry->failures()['dummy']->reason)->toBe('custom reason')
+        ->and($registry->has('core'))->toBeTrue();
+});
+
+it('fails open when the database connection is unusable', function () {
+    config(['database.default' => 'nope']);
+    $registry = new ModuleRegistry('0.1.0');
+
+    expect($registry->failures())->toBe([])
+        ->and($registry->all()->all())->toBe([])
+        ->and($registry->disabled())->toBe([]);
 });

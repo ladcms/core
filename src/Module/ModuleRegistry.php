@@ -6,6 +6,8 @@ namespace Ladcms\Core\Module;
 
 use Composer\Semver\Semver;
 use Illuminate\Support\Collection;
+use Ladcms\Core\Models\Module;
+use Throwable;
 use UnexpectedValueException;
 
 class ModuleRegistry
@@ -22,6 +24,11 @@ class ModuleRegistry
     /** @var array<string, string> модули, пропущенные при boot => причина пропуска */
     private array $skipped = [];
 
+    /** @var array<string, string> модули, выключенные администратором => причина */
+    private array $disabled = [];
+
+    private bool $disabledLoaded = false;
+
     private bool $validated = false;
 
     public function __construct(private readonly string $coreVersion) {}
@@ -30,6 +37,8 @@ class ModuleRegistry
     {
         $this->registered[$module->name()] = $module;
         $this->validated = false;
+        // Набор модулей изменился (в тестах — после появления строк в БД): выключенные читаем заново.
+        $this->disabledLoaded = false;
     }
 
     /**
@@ -42,6 +51,8 @@ class ModuleRegistry
         if ($this->validated) {
             return;
         }
+
+        $this->loadDisabledFromDatabase();
 
         $previous = $this->failures;
         $this->modules = $this->registered;
@@ -59,6 +70,13 @@ class ModuleRegistry
             } catch (UnexpectedValueException $e) {
                 // Битый constraint одного модуля не должен ронять весь сайт.
                 $this->fail($name, "invalid core version constraint [{$module->coreVersion()}]: {$e->getMessage()}");
+            }
+        }
+
+        // Выключенный администратором модуль недоступен — как непрошедший проверку (причина важнее «skipped at boot»).
+        foreach ($this->disabled as $name => $reason) {
+            if (isset($this->modules[$name])) {
+                $this->fail($name, $reason);
             }
         }
 
@@ -84,7 +102,7 @@ class ModuleRegistry
         } while ($changed);
 
         foreach ($this->failures as $name => $failure) {
-            if (($previous[$name] ?? null)?->reason !== $failure->reason) {
+            if (! isset($this->disabled[$name]) && ($previous[$name] ?? null)?->reason !== $failure->reason) {
                 logger()->warning("LADCMS module [{$name}] disabled: {$failure->reason}");
             }
         }
@@ -99,6 +117,43 @@ class ModuleRegistry
 
         $this->skipped[$name] ??= $this->failures[$name]->reason ?? 'unknown reason';
         $this->validated = false;
+    }
+
+    /** Помечает модуль выключенным администратором. `core` выключить нельзя. */
+    public function markDisabled(string $name, string $reason = 'disabled by administrator'): void
+    {
+        if ($name === 'core') {
+            return;
+        }
+
+        $this->disabled[$name] = $reason;
+        $this->validated = false;
+    }
+
+    /**
+     * Один раз за запрос читает `modules.is_enabled = false` из БД. Таблицы может не быть
+     * (`ladcms:install` до миграций, тесты без БД) — тогда выключенных модулей нет.
+     */
+    private function loadDisabledFromDatabase(): void
+    {
+        if ($this->disabledLoaded) {
+            return;
+        }
+        $this->disabledLoaded = true;
+
+        // Fail open намеренно: нет таблицы, соединения или драйвера — значит, выключенных модулей нет,
+        // и приложение (включая artisan-команды вроде config:clear) продолжает загружаться.
+        try {
+            $names = Module::query()->where('is_enabled', false)->pluck('name');
+        } catch (Throwable) {
+            return;
+        }
+
+        foreach ($names as $name) {
+            if ($name !== 'core') {
+                $this->disabled[(string) $name] = 'disabled by administrator';
+            }
+        }
     }
 
     private function fail(string $name, string $reason): void
@@ -155,6 +210,21 @@ class ModuleRegistry
     public function names(): array
     {
         return $this->all()->keys()->values()->all();
+    }
+
+    /**
+     * Зарегистрированные модули, выключенные администратором.
+     *
+     * @return list<string>
+     */
+    public function disabled(): array
+    {
+        $this->validate();
+
+        return array_values(array_filter(
+            array_keys($this->disabled),
+            fn (string $name): bool => isset($this->registered[$name]),
+        ));
     }
 
     /** @return array<string, ModuleFailure> */

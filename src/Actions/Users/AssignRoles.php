@@ -5,12 +5,14 @@ declare(strict_types=1);
 namespace Ladcms\Core\Actions\Users;
 
 use Illuminate\Auth\Access\AuthorizationException;
+use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Validation\ValidationException;
 use InvalidArgumentException;
 use Ladcms\Core\Models\Role;
 use Ladcms\Core\Models\User;
 use Ladcms\Core\Support\Audit;
+use Ladcms\Core\Support\RolePermissionGuard;
 use Ladcms\Core\Support\UserModel;
 
 class AssignRoles
@@ -41,27 +43,35 @@ class AssignRoles
             throw ValidationException::withMessages(['roles' => 'Unknown roles: '.implode(', ', $missing).'.']);
         }
 
-        if (! $actor->isCreator()) {
-            $actorLevel = $actor->level();
-            $tooHigh = $roles->filter(fn (Role $role): bool => ($role->level ?? 0) >= $actorLevel);
+        // Проверяются только изменения: добавлять и снимать можно лишь роли, которые актор вправе назначать.
+        // Роль вне его полномочий, присутствующая и до, и после, остаётся как есть.
+        $current = Role::query()->with('permissions')->whereKey($target->roles()->pluck('roles.id')->all())->get();
+        $added = $roles->reject(fn (Role $role): bool => $current->contains('id', $role->id));
+        $removed = $current->reject(fn (Role $role): bool => $roles->contains('id', $role->id));
 
-            if ($tooHigh->isNotEmpty()) {
-                throw new AuthorizationException('You cannot assign roles at or above your own level.');
-            }
+        $forbidden = $added->merge($removed)->reject(fn (Role $role): bool => RolePermissionGuard::mayAssign($actor, $role));
 
-            // Роль не должна давать прав, которых нет у самого актора (иначе — эскалация через роль без уровня/ниже уровня).
-            $actorPermissions = $actor->getAllPermissions()->pluck('name')->all();
-            $escalating = $roles->filter(fn (Role $role): bool => array_diff($role->permissions->pluck('name')->all(), $actorPermissions) !== []);
-
-            if ($escalating->isNotEmpty()) {
-                throw new AuthorizationException('You cannot assign roles with permissions you do not have.');
-            }
+        if ($forbidden->isNotEmpty()) {
+            throw new AuthorizationException('You cannot add or remove roles at or above your own level or with permissions you do not have.');
         }
 
-        $previous = $target->getRoleNames()->values()->all();
+        $previous = $current->pluck('name')->values()->all();
         $target->syncRoles($roles);
         Audit::log('roles.assigned', $actor, $target, ['roles' => $roles->pluck('name')->values()->all(), 'previous' => $previous]);
 
         return $target;
+    }
+
+    /**
+     * Roles the actor may hand out: all for a creator; otherwise roles strictly below the actor's
+     * level whose permissions are a subset of the actor's own (no escalation through a role).
+     *
+     * @return Collection<int, Role>
+     */
+    public static function assignableBy(User $actor): Collection
+    {
+        $roles = Role::query()->with('permissions')->where('guard_name', 'web')->orderBy('level')->orderBy('name')->get();
+
+        return $roles->filter(fn (Role $role): bool => RolePermissionGuard::mayAssign($actor, $role))->values();
     }
 }
