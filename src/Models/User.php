@@ -27,6 +27,7 @@ use Spatie\Permission\Traits\HasRoles;
  * @property string $name
  * @property string $email
  * @property ?string $avatar_path
+ * @property ?Carbon $avatar_updated_at
  * @property-read ?string $avatar_url
  * @property ?Sex $sex
  * @property ?Carbon $birth_date
@@ -41,6 +42,7 @@ use Spatie\Permission\Traits\HasRoles;
  * @property bool $show_email
  * @property bool $show_birthday
  * @property MessagesFrom $messages_from
+ * @property ?array<string, array{database?: bool, mail?: bool}> $notification_preferences
  * @property ?Carbon $email_verified_at
  * @property ?Carbon $first_verified_at
  * @property ?Carbon $created_at
@@ -58,7 +60,7 @@ class User extends Authenticatable
     protected string $guard_name = 'web';
 
     protected $fillable = [
-        'login', 'name', 'email', 'password', 'avatar_path', 'sex', 'birth_date', 'about', 'signature',
+        'login', 'name', 'email', 'password', 'avatar_path', 'avatar_updated_at', 'sex', 'birth_date', 'about', 'signature',
         'language', 'timezone',
         'show_email', 'show_birthday', 'messages_from',
     ];
@@ -70,6 +72,7 @@ class User extends Authenticatable
         return [
             'email_verified_at' => 'datetime',
             'first_verified_at' => 'datetime',
+            'avatar_updated_at' => 'datetime',
             'password' => 'hashed',
             'sex' => Sex::class,
             'birth_date' => 'date',
@@ -78,6 +81,7 @@ class User extends Authenticatable
             'show_email' => 'boolean',
             'show_birthday' => 'boolean',
             'messages_from' => MessagesFrom::class,
+            'notification_preferences' => 'array',
         ];
     }
 
@@ -160,7 +164,10 @@ class User extends Authenticatable
             return null;
         }
 
-        return Storage::disk(self::avatarDisk())->url(self::avatarFile($this->id, $size));
+        $url = Storage::disk(self::avatarDisk())->url(self::avatarFile($this->id, $size));
+
+        // Путь файла постоянный, поэтому версия в query сбрасывает кэш браузера/CDN после замены.
+        return $this->avatar_updated_at !== null ? $url.'?v='.$this->avatar_updated_at->getTimestamp() : $url;
     }
 
     public static function avatarDisk(): string
@@ -240,6 +247,21 @@ class User extends Authenticatable
     public function isBanned(): bool
     {
         return $this->activeBan() instanceof Ban;
+    }
+
+    /**
+     * Хочет ли пользователь получать уведомление типа `$type` (ключ `core.notification_types`) по каналу `database|mail`.
+     * Без явного выбора: в приложении — да, по почте — только типы из `core.notification_mail_default`.
+     */
+    public function wantsNotification(string $type, string $channel): bool
+    {
+        $stored = $this->notification_preferences[$type][$channel] ?? null;
+
+        if (is_bool($stored)) {
+            return $stored;
+        }
+
+        return $channel === 'database' || ($channel === 'mail' && in_array($type, (array) config('core.notification_mail_default', []), true));
     }
 
     /** Может ли писать: нет активного бана любого типа и истёк read-only период после регистрации. */

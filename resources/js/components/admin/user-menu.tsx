@@ -17,6 +17,9 @@ import {
 } from '@ladcms/core/components/ui/dropdown-menu';
 import type { CurrentUser } from '@ladcms/core/types/admin';
 import { roleName, useT } from '@ladcms/core/lib/i18n';
+import { logout } from '@/routes';
+import { profile as settingsProfile } from '@/routes/settings';
+import { show as userProfile } from '@/routes/users';
 
 function initials(name: string): string {
     const parts = name.trim().split(/\s+/).filter(Boolean);
@@ -59,7 +62,7 @@ export function UserMenu({ user }: { user: CurrentUser }) {
                         {user.roles.length > 0 && (
                             <span className="truncate text-xs text-muted-foreground">
                                 {user.roles
-                                    .map((name) => roleName(t, name))
+                                    .map((role) => roleName(t, role.name))
                                     .join(', ')}
                             </span>
                         )}
@@ -68,13 +71,13 @@ export function UserMenu({ user }: { user: CurrentUser }) {
                 <DropdownMenuSeparator />
                 <DropdownMenuGroup>
                     <DropdownMenuItem asChild>
-                        <Link href={`/u/${user.login}`}>
+                        <Link href={userProfile(user.login)}>
                             <User aria-hidden />
                             {t('core::admin.user_menu.profile')}
                         </Link>
                     </DropdownMenuItem>
                     <DropdownMenuItem asChild>
-                        <Link href="/settings/profile">
+                        <Link href={settingsProfile()}>
                             <Settings aria-hidden />
                             {t('core::admin.user_menu.settings')}
                         </Link>
@@ -83,8 +86,7 @@ export function UserMenu({ user }: { user: CurrentUser }) {
                 <DropdownMenuSeparator />
                 <DropdownMenuItem asChild>
                     <Link
-                        href="/logout"
-                        method="post"
+                        href={logout()}
                         as="button"
                         className="w-full"
                         onClick={() => router.flushAll()}

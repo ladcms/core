@@ -1,4 +1,4 @@
-import { useHttp, usePage } from '@inertiajs/react';
+import { Link, useHttp, usePage } from '@inertiajs/react';
 import { Bell } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Badge } from '@ladcms/core/components/ui/badge';
@@ -9,13 +9,17 @@ import {
     PopoverTrigger,
 } from '@ladcms/core/components/ui/popover';
 import { useT } from '@ladcms/core/lib/i18n';
+import { relativeTime } from '@ladcms/core/lib/relative-time';
 import type { Translate } from '@ladcms/core/lib/i18n';
 import { cn } from '@ladcms/core/lib/utils';
-import { index, read, readAll } from '@/routes/notifications';
+import { index, page, read, readAll } from '@/routes/notifications';
 
 export type NotificationItem = {
     id: string;
     type: string;
+    title: string;
+    params: Record<string, string | number>;
+    url: string | null;
     data: Record<string, unknown>;
     read_at: string | null;
     created_at: string;
@@ -28,47 +32,18 @@ type NotificationsPayload = {
 
 const POLL_INTERVAL_MS = 60_000;
 
-/** Заголовок: `data.title`, иначе перевод по типу (`notifications.types.<ClassBasename>`), иначе сам тип. */
+/** Событие `window`: список уведомлений изменился вне колокольчика (например, «Прочитать все» на странице) — перечитать счётчик. */
+export const NOTIFICATIONS_CHANGED_EVENT = 'ladcms:notifications-changed';
+
+/** Заголовок: ключ перевода из `title` (с `params`), для устаревших строк сервер подставляет ключ по типу. */
 function titleOf(item: NotificationItem, t: Translate): string {
-    const title = item.data.title;
-    if (typeof title === 'string' && title !== '') {
-        return title;
-    }
-
-    const key = `core::admin.notifications.types.${item.type}`;
-    const translated = t(key);
-
-    return translated === key ? item.type : translated;
+    return item.title !== '' ? t(item.title, item.params) : item.type;
 }
 
 function messageOf(item: NotificationItem): string | null {
     const message = item.data.message;
 
     return typeof message === 'string' && message !== '' ? message : null;
-}
-
-const units: [Intl.RelativeTimeFormatUnit, number][] = [
-    ['day', 86_400],
-    ['hour', 3_600],
-    ['minute', 60],
-];
-
-function relativeTime(iso: string, locale: string): string {
-    const timestamp = new Date(iso).getTime();
-    if (Number.isNaN(timestamp)) {
-        return '';
-    }
-
-    const formatter = new Intl.RelativeTimeFormat(locale, { numeric: 'auto' });
-    const seconds = Math.round((timestamp - Date.now()) / 1000);
-
-    for (const [unit, size] of units) {
-        if (Math.abs(seconds) >= size) {
-            return formatter.format(Math.round(seconds / size), unit);
-        }
-    }
-
-    return formatter.format(0, 'second');
 }
 
 /** Колокольчик уведомлений: не зависит от admin-пропсов, пригоден для публичной шапки. */
@@ -139,11 +114,14 @@ export function NotificationBell({ className }: { className?: string }) {
         if (!document.hidden) {
             start();
         }
+        const onChanged = () => void load();
         document.addEventListener('visibilitychange', onVisibility);
+        window.addEventListener(NOTIFICATIONS_CHANGED_EVENT, onChanged);
 
         return () => {
             stop();
             document.removeEventListener('visibilitychange', onVisibility);
+            window.removeEventListener(NOTIFICATIONS_CHANGED_EVENT, onChanged);
         };
     }, [load]);
 
@@ -196,10 +174,10 @@ export function NotificationBell({ className }: { className?: string }) {
                     className={cn('relative', className)}
                     aria-label={
                         unread > 0
-                            ? t('core::admin.notifications.aria_unread', {
+                            ? t('core::public.notifications.aria_unread', {
                                   count: unread,
                               })
-                            : t('core::admin.notifications.aria')
+                            : t('core::public.notifications.aria')
                     }
                 >
                     <Bell aria-hidden />
@@ -219,7 +197,7 @@ export function NotificationBell({ className }: { className?: string }) {
             >
                 <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-2">
                     <span className="text-sm font-medium">
-                        {t('core::admin.notifications.title')}
+                        {t('core::public.notifications.title')}
                     </span>
                     <Button
                         variant="ghost"
@@ -227,7 +205,7 @@ export function NotificationBell({ className }: { className?: string }) {
                         disabled={unread === 0}
                         onClick={() => void markAllRead()}
                     >
-                        {t('core::admin.notifications.mark_all')}
+                        {t('core::public.notifications.mark_all')}
                     </Button>
                 </div>
                 {failed && (
@@ -235,12 +213,12 @@ export function NotificationBell({ className }: { className?: string }) {
                         role="alert"
                         className="px-3 py-2 text-xs text-destructive"
                     >
-                        {t('core::admin.notifications.load_error')}
+                        {t('core::public.notifications.load_error')}
                     </p>
                 )}
                 {items.length === 0 ? (
                     <p className="px-3 py-6 text-center text-sm text-muted-foreground">
-                        {t('core::admin.notifications.empty')}
+                        {t('core::public.notifications.empty')}
                     </p>
                 ) : (
                     <ul className="max-h-96 divide-y divide-border overflow-y-auto">
@@ -293,6 +271,14 @@ export function NotificationBell({ className }: { className?: string }) {
                         })}
                     </ul>
                 )}
+                <div className="border-t border-border px-3 py-2 text-center">
+                    <Link
+                        href={page()}
+                        className="text-sm text-primary hover:underline"
+                    >
+                        {t('core::public.notifications.all')}
+                    </Link>
+                </div>
             </PopoverContent>
         </Popover>
     );

@@ -9,30 +9,31 @@ use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Notifications\Messages\MailMessage;
 use Illuminate\Notifications\Notification;
 use Ladcms\Core\Models\Ban;
+use Ladcms\Core\Notifications\Concerns\RespectsPreferences;
 
 /** В очереди и только после коммита: письмо не уходит, если транзакция бана откатилась. */
 class UserBanned extends Notification implements ShouldQueue
 {
     use Queueable;
+    use RespectsPreferences;
+
+    public const string TYPE = 'bans';
 
     public function __construct(public readonly Ban $ban)
     {
         $this->afterCommit();
     }
 
-    /** @return list<string> */
-    public function via(object $notifiable): array
-    {
-        return ['database', 'mail'];
-    }
-
-    /** @return array{ban_id: int, reason_code: string, expires_at: ?string} */
+    /** @return array{ban_id: int, reason_code: string, expires_at: ?string, title: string, params: array{}, url: null} */
     public function toDatabase(object $notifiable): array
     {
         return [
             'ban_id' => $this->ban->id,
             'reason_code' => $this->ban->reason_code,
             'expires_at' => $this->ban->expires_at?->toIso8601String(),
+            'title' => 'core::public.notifications.banned',
+            'params' => [],
+            'url' => null,
         ];
     }
 

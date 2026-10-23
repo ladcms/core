@@ -11,13 +11,12 @@ use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Database\Eloquent\Relations\Relation;
 use Illuminate\Foundation\Http\Kernel as HttpKernel;
 use Illuminate\Http\Request;
-use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Gate;
-use Illuminate\Support\Facades\Lang;
 use Illuminate\Support\Facades\Route;
 use Inertia\Inertia;
 use Ladcms\Core\Admin\AdminMenu;
+use Ladcms\Core\Admin\DashboardStats;
 use Ladcms\Core\Admin\MenuItem;
 use Ladcms\Core\Console\InstallModuleCommand;
 use Ladcms\Core\Console\PruneUnverifiedUsersCommand;
@@ -28,6 +27,7 @@ use Ladcms\Core\Http\Middleware\CheckBan;
 use Ladcms\Core\Http\Middleware\ConfirmPasswordWithSettingsTtl;
 use Ladcms\Core\Http\Middleware\EnsureRegistrationOpen;
 use Ladcms\Core\Http\Middleware\SetLocale;
+use Ladcms\Core\Http\Middleware\SharePublicLayout;
 use Ladcms\Core\Http\Middleware\TrackOnline;
 use Ladcms\Core\Http\Resources\CurrentUserResource;
 use Ladcms\Core\Inertia\ModulePageFinder;
@@ -35,8 +35,11 @@ use Ladcms\Core\Listeners\AssignDefaultRole;
 use Ladcms\Core\Models\Role;
 use Ladcms\Core\Models\User;
 use Ladcms\Core\Module\Contracts\HasAdminPanel;
+use Ladcms\Core\Module\Contracts\HasHeaderActions;
+use Ladcms\Core\Module\Contracts\HasNavigation;
 use Ladcms\Core\Module\Contracts\HasPermissions;
 use Ladcms\Core\Module\Contracts\HasSettings;
+use Ladcms\Core\Module\Contracts\HasWidgets;
 use Ladcms\Core\Module\ModuleRegistry;
 use Ladcms\Core\Module\ModuleServiceProvider;
 use Ladcms\Core\Policies\RolePolicy;
@@ -47,13 +50,17 @@ use Ladcms\Core\Settings\GeneralSettings;
 use Ladcms\Core\Settings\ModerationSettings;
 use Ladcms\Core\Settings\RegistrationSettings;
 use Ladcms\Core\Support\UserModel;
+use Ladcms\Core\Ui\HeaderActions;
+use Ladcms\Core\Ui\Navigation;
+use Ladcms\Core\Ui\ProfileSections;
+use Ladcms\Core\Ui\Widgets;
 use Spatie\LaravelPackageTools\Package;
 use Spatie\Permission\Middleware\PermissionMiddleware;
 use Spatie\Permission\Middleware\RoleMiddleware;
 use Spatie\Permission\Middleware\RoleOrPermissionMiddleware;
 use Spatie\Permission\PermissionRegistrar;
 
-class CoreServiceProvider extends ModuleServiceProvider implements HasAdminPanel, HasPermissions, HasSettings
+class CoreServiceProvider extends ModuleServiceProvider implements HasAdminPanel, HasHeaderActions, HasNavigation, HasPermissions, HasSettings, HasWidgets
 {
     public const VERSION = '0.1.0';
 
@@ -79,6 +86,7 @@ class CoreServiceProvider extends ModuleServiceProvider implements HasAdminPanel
             '@radix-ui/react-popover' => '^1.3.1',
             '@radix-ui/react-switch' => '^1.4.1',
             '@radix-ui/react-tabs' => '^1.2.1',
+            '@tailwindcss/typography' => '^0.5.20',
             'cmdk' => '^1.1.1',
         ];
     }
@@ -119,6 +127,50 @@ class CoreServiceProvider extends ModuleServiceProvider implements HasAdminPanel
             ['key' => 'modules', 'label' => 'core::admin.menu.modules', 'icon' => 'puzzle', 'route' => 'admin.modules.index', 'order' => 60, 'path' => '/admin/modules', 'permission' => 'modules.manage'],
             ['key' => 'activity', 'label' => 'core::admin.menu.activity', 'icon' => 'scroll-text', 'route' => 'admin.activity.index', 'order' => 70, 'path' => '/admin/activity', 'permission' => 'activity.view'],
         ];
+    }
+
+    public function navigation(): array
+    {
+        return [
+            ['key' => 'home', 'label' => 'core::public.nav.home', 'icon' => 'house', 'route' => 'home', 'order' => 10],
+            ['key' => 'users', 'label' => 'core::public.nav.users', 'icon' => 'users', 'route' => 'users.index', 'order' => 20],
+            ['key' => 'rules', 'label' => 'core::public.nav.rules', 'icon' => 'scroll', 'route' => 'rules', 'order' => 30],
+        ];
+    }
+
+    public function widgets(): array
+    {
+        $avatar = fn (User $user): array => [
+            'id' => $user->id,
+            'login' => $user->login,
+            'display_name' => $user->name ?: $user->login,
+            'avatar_url' => $user->avatar_url,
+        ];
+
+        return [
+            ['name' => 'welcome', 'component' => 'core::Welcome', 'slot' => 'main', 'order' => 10, 'props' => fn (): array => [
+                'site_name' => app(GeneralSettings::class)->site_name,
+                'description' => app(GeneralSettings::class)->site_description ?: null,
+                'rules_url' => route('rules'),
+            ]],
+            ['name' => 'online', 'component' => 'core::Online', 'slot' => 'sidebar', 'order' => 10, 'props' => function () use ($avatar): array {
+                $online = UserModel::query()->where('last_activity_at', '>=', now()->subMinutes(DashboardStats::ONLINE_MINUTES));
+
+                return [
+                    'count' => (clone $online)->count(),
+                    'users' => $online->orderByDesc('last_activity_at')->limit(10)->get()->map($avatar)->all(),
+                ];
+            }],
+            ['name' => 'latest-users', 'component' => 'core::LatestUsers', 'slot' => 'sidebar', 'order' => 20, 'props' => fn (): array => [
+                'users' => UserModel::query()->latest('id')->limit(5)->get()
+                    ->map(fn (User $user): array => $avatar($user) + ['created_at' => $user->created_at?->toISOString()])->all(),
+            ]],
+        ];
+    }
+
+    public function headerActions(): array
+    {
+        return [['key' => 'notifications', 'icon' => 'bell', 'component' => 'core::NotificationBell', 'order' => 10, 'auth' => true]];
     }
 
     /** Админ-роуты ядра — прямо под `/admin` с именами `admin.*`. */
@@ -180,12 +232,19 @@ class CoreServiceProvider extends ModuleServiceProvider implements HasAdminPanel
             $kernel->appendMiddlewareToGroup('web', TrackOnline::class);
             $kernel->appendMiddlewareToGroup('web', EnsureRegistrationOpen::class);
             $kernel->appendMiddlewareToGroup('web', SetLocale::class);
+            $kernel->appendMiddlewareToGroup('web', SharePublicLayout::class);
         } else {
             $router->pushMiddlewareToGroup('web', CheckBan::class);
             $router->pushMiddlewareToGroup('web', TrackOnline::class);
             $router->pushMiddlewareToGroup('web', EnsureRegistrationOpen::class);
             $router->pushMiddlewareToGroup('web', SetLocale::class);
+            $router->pushMiddlewareToGroup('web', SharePublicLayout::class);
         }
+
+        $this->app->scoped(Widgets::class);
+        $this->app->scoped(Navigation::class);
+        $this->app->scoped(HeaderActions::class);
+        $this->app->scoped(ProfileSections::class);
 
         Inertia::share('locale', fn (): string => app()->getLocale());
         Inertia::share('locales', fn (): array => $this->app->make(LocaleManager::class)->available());
@@ -205,26 +264,6 @@ class CoreServiceProvider extends ModuleServiceProvider implements HasAdminPanel
                 ),
                 'user' => CurrentUserResource::make($user)->resolve($request),
             ];
-        });
-
-        // Переводы админки (`<module>::admin.*`) для текущей локали — плоской картой, только на админ-роутах.
-        // Собирается на каждый запрос, без кэша: набор модулей и локаль меняются между запросами.
-        Inertia::share('i18n', function (): ?array {
-            if (! $this->app->make(Request::class)->routeIs('admin.*')) {
-                return null;
-            }
-
-            $map = [];
-            foreach ($this->app->make(ModuleRegistry::class)->names() as $name) {
-                $lines = Lang::get("{$name}::admin");
-                if (is_array($lines)) {
-                    foreach (Arr::dot($lines) as $key => $value) {
-                        $map["{$name}::admin.{$key}"] = $value;
-                    }
-                }
-            }
-
-            return $map;
         });
 
         // Ежедневная чистка: неподтверждённые аккаунты и старые записи журнала активности.
